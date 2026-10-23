@@ -129,10 +129,13 @@ st.caption("Lump-sum investment on a chosen start date, compared across your bas
 
 with st.sidebar:
     st.header("Inputs")
+    # max_value is one day ahead so a user whose local date is ahead of the server's (UTC)
+    # can still pick "today"; the end is clipped to the latest available NAV anyway.
+    _max = date.today() + timedelta(days=1)
     start_date = st.date_input("Start date", value=date.today() - timedelta(days=3 * 365),
-                               min_value=date(2005, 1, 1), max_value=date.today())
+                               min_value=date(2005, 1, 1), max_value=_max)
     end_date = st.date_input("End date", value=date.today(),
-                             min_value=date(2005, 1, 1), max_value=date.today())
+                             min_value=date(2005, 1, 1), max_value=_max)
     amount = st.number_input("Start amount (₹)", min_value=1000.0, value=1_000_000.0,
                              step=50_000.0, format="%.0f")
     rebalance = st.selectbox("Rebalancing", ["None (buy & hold)", "Monthly", "Quarterly", "Annually"],
@@ -153,25 +156,26 @@ st.subheader("1. Define your baskets")
 c1, c2 = st.columns([3, 1])
 with c2:
     st.download_button("Download template CSV", DEFAULT_BASKETS.to_csv(index=False),
-                       "baskets_template.csv", "text/csv", use_container_width=True)
+                       "baskets_template.csv", "text/csv", width="stretch", on_click="ignore")
     up = st.file_uploader("Upload baskets CSV", type="csv", label_visibility="collapsed")
 
+base_df, editor_key = DEFAULT_BASKETS, "basket_editor_default"
 if up is not None:
     try:
-        base_df = pd.read_csv(up)
-        base_df = base_df[["Basket", "Scheme Code", "Weight %"]]
+        _csv = pd.read_csv(up)
+        base_df = _csv[["Basket", "Scheme Code", "Weight %"]]
+        # new key per uploaded file so the editor resets to the uploaded data
+        editor_key = f"basket_editor_{up.file_id}"
     except Exception as e:
         st.error(f"Could not read CSV (need columns Basket, Scheme Code, Weight %): {e}")
-        base_df = DEFAULT_BASKETS
-else:
-    base_df = st.session_state.get("baskets_df", DEFAULT_BASKETS)
 
 with c1:
+    # The edited table is NOT fed back in as input: the editor keeps its own edits under `key`.
     edited = st.data_editor(
         base_df,
         num_rows="dynamic",
-        use_container_width=True,
-        key="basket_editor",
+        width="stretch",
+        key=editor_key,
         column_config={
             "Basket": st.column_config.TextColumn("Basket", required=True),
             "Scheme Code": st.column_config.NumberColumn("Scheme Code", format="%d", required=True),
@@ -179,7 +183,6 @@ with c1:
                                                       format="%.2f", required=True),
         },
     )
-st.session_state["baskets_df"] = edited
 
 with st.expander("🔎 Find a scheme code"):
     q = st.text_input("Search fund name (e.g. 'parag parikh flexi direct growth')")
@@ -187,12 +190,14 @@ with st.expander("🔎 Find a scheme code"):
         try:
             res = search_funds(q)
             st.dataframe(res.rename(columns={"schemeCode": "Scheme Code", "schemeName": "Fund Name"}),
-                         use_container_width=True, hide_index=True)
+                         width="stretch", hide_index=True)
         except Exception as e:
             st.error(f"Search failed: {e}")
 
-run = st.button("Run comparison", type="primary")
-if not run:
+if st.button("Run comparison", type="primary"):
+    st.session_state["ran"] = True
+# Once run, results stay on screen across reruns (changing an input, downloading a file, etc.)
+if not st.session_state.get("ran"):
     st.info("Set your baskets and inputs, then click **Run comparison**.")
     st.stop()
 
@@ -237,7 +242,7 @@ last_dt = {c: series[c].index[-1] for c in codes}
 
 # end date: clip to latest date all funds have data
 end_eff = min(pd.Timestamp(end_date), min(last_dt.values()))
-if end_eff < pd.Timestamp(end_date) - pd.Timedelta(days=5):
+if (pd.Timestamp(end_date) - end_eff).days > 5:
     st.warning(f"Some fund's latest NAV is {end_eff.date()}; comparison ends there.")
 
 # start date: first trading date on/after chosen start
@@ -303,7 +308,7 @@ with tab1:
     fig.add_hline(y=amount, line_dash="dot", line_color="grey", annotation_text="Start amount")
     fig.update_layout(height=480, hovermode="x unified", yaxis_title="Portfolio value (₹)",
                       legend=dict(orientation="h", y=1.08), margin=dict(l=10, r=10, t=30, b=10))
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     # relative performance: indexed to 100
     fig2 = go.Figure()
@@ -311,7 +316,7 @@ with tab1:
         fig2.add_trace(go.Scatter(x=v.index, y=v / amount * 100, name=b, mode="lines"))
     fig2.update_layout(height=320, hovermode="x unified", yaxis_title="Indexed (start = 100)",
                        showlegend=False, margin=dict(l=10, r=10, t=10, b=10))
-    st.plotly_chart(fig2, use_container_width=True)
+    st.plotly_chart(fig2, width="stretch")
 
 with tab2:
     fig = go.Figure()
@@ -319,7 +324,7 @@ with tab2:
         fig.add_trace(go.Scatter(x=d.index, y=d.values * 100, name=b, mode="lines"))
     fig.update_layout(height=420, hovermode="x unified", yaxis_title="Drawdown (%)",
                       legend=dict(orientation="h", y=1.08), margin=dict(l=10, r=10, t=30, b=10))
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 with tab3:
     show = summary.copy()
@@ -328,10 +333,10 @@ with tab3:
     for c in ["Absolute Return", "CAGR", "Volatility (ann.)", "Max Drawdown"]:
         show[c] = show[c].map(lambda x: f"{x:.2%}")
     show["Return / Risk"] = show["Return / Risk"].map(lambda x: f"{x:.2f}")
-    st.dataframe(show, use_container_width=True)
+    st.dataframe(show, width="stretch")
     st.download_button("Download growth data (CSV)",
                        pd.DataFrame(growth).round(2).to_csv(),
-                       "basket_growth.csv", "text/csv")
+                       "basket_growth.csv", "text/csv", on_click="ignore")
     st.caption("CAGR for periods under 1 year is annualised and can look extreme. "
                "Volatility is based on daily NAV returns. Direct/Regular and Growth/IDCW "
                "plan choice affects returns - check the fund names below.")
@@ -345,7 +350,7 @@ with tab4:
     det["Fund return (period)"] = det["Fund return (period)"].map(
         lambda x: "n/a (too new)" if pd.isna(x) else f"{x:.2%}")
     st.dataframe(det[["Basket", "Scheme Code", "Fund", "Weight %", "Fund return (period)"]],
-                 use_container_width=True, hide_index=True)
+                 width="stretch", hide_index=True)
 
 st.caption("Returns are based on NAV (dividends assumed reinvested in Growth plans). "
            "No taxes, exit loads or rebalancing costs are included. Past performance does not "
